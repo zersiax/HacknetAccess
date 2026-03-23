@@ -13,6 +13,7 @@ Built on [Hacknet-Pathfinder](https://github.com/Arkhist/Hacknet-Pathfinder) (Be
 - Accessible main menu, settings, login/account creation
 - Mail inbox with attachment navigation
 - Network map browsing
+- Reading notes in the notes app
 - RAM status monitoring
 - Display module focus mode for daemon interaction
 - Daemon support: mail servers, databases, IRC, web servers, message boards, mission boards, contract hubs
@@ -28,13 +29,13 @@ Built on [Hacknet-Pathfinder](https://github.com/Arkhist/Hacknet-Pathfinder) (Be
 - F3: Network map (Up/Down navigate, Enter connect, Escape back)
 - F4: Read RAM status
 - F5: Display focus mode (daemon interaction). Up/Down/Enter/Escape when focused. Press again to re-read. Escape returns to terminal.
-- F6: Open mail (bare Up/Down/Enter navigate inbox and emails)
-- F7: Notes focus mode (Up/Down navigate, Escape exit, Ctrl+Shift+W close)
+- F6: Open mail (Up/Down/Enter navigate inbox and emails)
+- F7: Notes focus mode (Up/Down navigate, Escape exit, Ctrl+Shift+W close). Due to the way notes work its best to close when you don't need it open, as it eats RAM.
 - F12: Toggle debug mode
 - Ctrl+R: Repeat last announcement
-- Ctrl+C: Copy navigated line or word to clipboard
 - Ctrl+Up/Down: Navigate terminal output lines
 - Ctrl+Left/Right: Navigate words within current line
+- Ctrl+C: Copy navigated line or word to clipboard, this depends on if you last read a line or a word. This is a bit of a screen reader cheat; the game does not natively allow for this but it helps with IP addresses and such.
 - Ctrl+O: Overload proxy from all shells
 - Ctrl+T: Set/trigger trap from all shells
 
@@ -50,7 +51,7 @@ Built on [Hacknet-Pathfinder](https://github.com/Arkhist/Hacknet-Pathfinder) (Be
 1. Download the latest release from the [Releases](../../releases) page
 2. Copy `HacknetAccess.dll` to your Hacknet `BepInEx\plugins\` folder (typically `C:\Program Files (x86)\Steam\steamapps\common\Hacknet\BepInEx\plugins\`)
 3. Copy `Tolk.dll` and `nvdaControllerClient32.dll` to your Hacknet game directory (next to `Hacknet.exe`)
-4. Launch Hacknet — the mod will announce "HacknetAccess loaded" on startup
+4. Launch HacknetPathfinderexe — the mod will announce "HacknetAccess loaded" on startup
 
 ### Important: 32-bit DLLs required
 
@@ -58,6 +59,11 @@ Hacknet is a 32-bit application. The Tolk.dll and nvdaControllerClient32.dll inc
 
 - `Tolk.dll` — 32-bit screen reader bridge library
 - `nvdaControllerClient32.dll` — required for NVDA support (JAWS works through COM without an extra DLL)
+
+### ALSO IMPORTANT
+
+Launching this game from Steam launches, to my knowledge at least, the default unmodded version. If that's fixable in Steam so it launches the correct executable, I wouldn't know how.
+So if nothing speaks and you've checked everything else, make sure you have the right executable. :-)
 
 ## Building from source
 
