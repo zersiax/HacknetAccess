@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <AssemblyName>HacknetAccess</AssemblyName>
+    <RootNamespace>HacknetAccess</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- BepInEx / Pathfinder -->
+    <Reference Include="BepInEx.Core">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Hacknet\BepInEx\core\BepInEx.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Hacknet">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Hacknet\BepInEx\core\BepInEx.Hacknet.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Hacknet\BepInEx\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="PathfinderAPI">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Hacknet\BepInEx\plugins\PathfinderAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- Game -->
+    <Reference Include="Hacknet">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Hacknet\Hacknet.exe</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FNA">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Hacknet\FNA.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- Screen Reader -->
+    <Reference Include="Tolk">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Hacknet\Tolk.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="DeployToGame" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)HacknetAccess.dll"
+          DestinationFolder="C:\Program Files (x86)\Steam\steamapps\common\Hacknet\BepInEx\plugins\"
+          OverwriteReadOnlyFiles="true" />
+    <Message Text="Deployed HacknetAccess.dll to game plugins folder." Importance="high" />
+  </Target>
+
+</Project>

@@ -1,0 +1,30 @@
+# Claude Code local settings
+.claude/
+
+# Build output
+bin/
+obj/
+
+# Decompiled game code (large, user-specific)
+decompiled/
+
+# Template files (not part of the mod)
+docs/
+docs-de/
+templates/
+scripts/
+lib/
+project_status.md
+CLAUDE.md
+CLAUDE.de.md
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
