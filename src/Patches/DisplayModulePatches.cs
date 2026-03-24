@@ -115,6 +115,13 @@ namespace HacknetAccess.Patches
                 if (lsContent == null || lsContent == _lastLsContent) return;
 
                 _lastLsContent = lsContent;
+
+                // Add each item to terminal review buffer so Ctrl+Up/Down can navigate them
+                foreach (string item in _lsItems)
+                {
+                    TerminalPatches.TrackOutput(item);
+                }
+
                 Plugin.Announce(lsContent, false);
             }
         }

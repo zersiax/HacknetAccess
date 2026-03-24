@@ -24,6 +24,9 @@ namespace HacknetAccess.Patches
                 if (!string.IsNullOrEmpty(message))
                 {
                     Plugin.Announce(message);
+                    // Reset prompt tracking so the next prompt is re-announced
+                    // even if it's the same (e.g. "USERNAME :" after validation error)
+                    _lastPrompt = null;
                     DebugLogger.Log(LogCategory.Handler, "LoginScreen", $"History: {message}");
                 }
             }

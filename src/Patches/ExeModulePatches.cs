@@ -172,7 +172,8 @@ namespace HacknetAccess.Patches
         }
 
         /// <summary>
-        /// Postfix on ShellExe.completedAction — announce overload/trap completed.
+        /// Prefix on ShellExe.completedAction — announce overload/trap completed.
+        /// Must be Prefix because completedAction calls cancelTarget() which clears destinationIP.
         /// </summary>
         [HarmonyPatch]
         static class ShellActionCompletePatch
@@ -184,7 +185,7 @@ namespace HacknetAccess.Patches
                     "completedAction", new[] { typeof(int) });
             }
 
-            static void Postfix(int action, object __instance)
+            static void Prefix(int action, object __instance)
             {
                 try
                 {

@@ -150,7 +150,7 @@ namespace HacknetAccess
             { "trace.pressBegin", "Trace danger! Press Enter to begin recovery." },
 
             // Mission Hub
-            { "hub.welcome", "Contract Hub: {0}. Ctrl+Enter to login, Escape to exit." },
+            { "hub.welcome", "Contract Hub: {0}. Enter to login, Escape to exit." },
             { "hub.menu", "Hub Menu. Ctrl+Enter for contracts, Ctrl+U for users, Ctrl+A to abort, Escape to exit." },
             { "hub.listing", "Contract Listing: {0} contracts. Ctrl+Up/Down to navigate, Ctrl+Enter to open." },
             { "hub.mission", "Contract {0} of {1}: {2}" },
@@ -166,12 +166,18 @@ namespace HacknetAccess
             { "listing.itemArticle", "Article {0} of {1}: {2}" },
             { "listing.detail", "{0}. {1}." },
             { "listing.accepted", "Contract accepted." },
-            { "listing.needLogin", "{0}. Ctrl+Enter to login, Escape to exit." },
+            { "listing.needLogin", "{0}. Enter to login, Escape to exit." },
             { "listing.hasActiveMission", "Complete or abandon current contract first." },
             { "listing.abandonHint", "Ctrl+A to abandon current contract." },
             { "listing.acceptHint", "Ctrl+Enter to accept." },
             { "listing.wrongFaction", "Contract unavailable: assigned to different faction." },
             { "listing.back", "Escape to go back." },
+
+            // Daemon Login
+            { "login.knownUsers", "{0} known accounts. Up/Down to select, Enter to login." },
+            { "login.noKnownUsers", "No known accounts. You need to discover credentials first." },
+            { "login.user", "Account {0} of {1}: {2}" },
+            { "login.failed", "Login failed. Enter to retry, Escape to go back." },
 
             // Database Daemons
             { "db.welcome", "Database server. Enter to search, Escape to exit." },
@@ -198,6 +204,7 @@ namespace HacknetAccess
             { "help.ctrlleftright", "Ctrl+Left/Right: Navigate words within current line" },
             { "help.ctrlo", "Ctrl+O: Overload proxy from all shells" },
             { "help.ctrlt", "Ctrl+T: Set trap or trigger trap from all shells" },
+            { "help.ctrlenter", "Ctrl+Enter: Spell out current line or word character by character" },
 
             // Settings Menu
             { "settings.opened", "Settings menu. {0} controls. Up/Down to navigate, Enter to activate." },

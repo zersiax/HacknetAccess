@@ -61,6 +61,9 @@ namespace HacknetAccess.Patches
                         string text = sb.ToString().Trim();
                         if (text.Length > 0)
                         {
+                            // Replace inaccessible instructions with accessible ones
+                            text = ReplaceInaccessibleInstructions(text);
+
                             // Append accessibility hints for visual-only steps
                             string hint = GetAccessibilityHint(___state);
                             if (hint != null)
@@ -186,6 +189,28 @@ namespace HacknetAccess.Patches
             {
                 DebugLogger.Log(LogCategory.Handler, "Tutorial", $"ForceTerminalVisible: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Replace inaccessible instructions in the tutorial text with
+        /// accessible equivalents so users aren't confused by references
+        /// to buttons they can't interact with.
+        /// </summary>
+        private static string ReplaceInaccessibleInstructions(string text)
+        {
+            // "pressing the Scan Network button on the display module" → "typing scan"
+            text = text.Replace(
+                "by pressing the Scan Network button on the display module.",
+                "by typing scan in the terminal.");
+            // "clicking the green circle" → use F3 or connect command
+            text = text.Replace(
+                "by clicking the green circle.",
+                "using F3 to open the network map, or by typing connect followed by your IP.");
+            // "clicking a blue node on the network map" → use F3
+            text = text.Replace(
+                "by clicking a blue node on the network map.",
+                "using F3 to open the network map and selecting a node, or by typing connect followed by the IP.");
+            return text;
         }
 
         /// <summary>

@@ -76,6 +76,7 @@ namespace HacknetAccess
                 sb.AppendLine(Loc.Get("help.ctrlleftright"));
                 sb.AppendLine(Loc.Get("help.ctrlo"));
                 sb.AppendLine(Loc.Get("help.ctrlt"));
+                sb.AppendLine(Loc.Get("help.ctrlenter"));
                 Announce(sb.ToString());
                 DebugLogger.LogInput("F1", "Help");
             }

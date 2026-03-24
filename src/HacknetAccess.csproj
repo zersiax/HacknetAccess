@@ -52,4 +52,20 @@
     <Message Text="Deployed HacknetAccess.dll to game plugins folder." Importance="high" />
   </Target>
 
+  <Target Name="PrepareRelease" AfterTargets="DeployToGame">
+    <PropertyGroup>
+      <ReleaseDir>$(MSBuildProjectDirectory)\..\release\</ReleaseDir>
+    </PropertyGroup>
+    <Copy SourceFiles="$(OutputPath)HacknetAccess.dll"
+          DestinationFolder="$(ReleaseDir)" OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\lib\Tolk.dll"
+          DestinationFolder="$(ReleaseDir)" OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\lib\nvdaControllerClient32.dll"
+          DestinationFolder="$(ReleaseDir)" OverwriteReadOnlyFiles="true" />
+    <MakeDir Directories="$(ReleaseDir)scripts" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\scripts\Install-HacknetAccess.ps1"
+          DestinationFolder="$(ReleaseDir)scripts" OverwriteReadOnlyFiles="true" />
+    <Message Text="Release folder prepared with all DLLs and install script." Importance="high" />
+  </Target>
+
 </Project>

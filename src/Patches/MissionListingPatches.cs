@@ -33,11 +33,20 @@ namespace HacknetAccess.Patches
         private static bool _isMissionAssigner;
         private static string _listingTitle;
 
+        // Login screen state — known credentials navigation
+        private static List<string> _knownUserNames = new List<string>();
+        private static List<string> _knownUserPasses = new List<string>();
+        private static int _loginUserIndex;
+        private static bool _loginAnnouncedUsers;
+        private static int _loginResult = -1; // -1=pending, 0=failed, 1=success
+
         /// <summary>
-        /// Whether the mission listing daemon is currently being drawn.
-        /// Used by DisplayModulePatches to detect interactive daemon presence.
+        /// Whether the mission listing daemon is currently being drawn
+        /// or in a login transition. Used by DisplayModulePatches to
+        /// detect interactive daemon presence.
         /// </summary>
-        public static bool IsActive => _listingActive;
+        public static bool IsActive => _listingActive || _loginInProgress;
+        private static bool _loginInProgress;
 
         /// <summary>
         /// Prefix on MissionListingServer.draw — mark listing as active.
@@ -99,11 +108,13 @@ namespace HacknetAccess.Patches
                                 break;
 
                             case 1: // Board
-                                // Returning from login — restore display focus
+                                _loginInProgress = false;
+                                TerminalPatches.SuppressPromptAnnounce = false;
+                                // Returning from login — clear terminal, ensure display stays on daemon
                                 if (prevState == 3)
                                 {
-                                    DisplayModulePatches.RestoreDisplayFocus();
                                     ClearTerminalLine();
+                                    EnsureDisplayCommand(__instance);
                                     Plugin.Announce(Loc.Get("daemon.loginSuccess"), false);
                                 }
 
@@ -135,14 +146,24 @@ namespace HacknetAccess.Patches
                                 break;
 
                             case 3: // Login
-                                // Login handled by AuthenticatingDaemon
+                                BuildKnownUserList(__instance);
+                                if (!_loginAnnouncedUsers)
+                                {
+                                    _loginAnnouncedUsers = true;
+                                    _loginUserIndex = 0;
+                                    AnnounceLoginScreen();
+                                }
                                 break;
                         }
                     }
 
                     // Claim Escape for internal back-navigation in sub-states
-                    if (_lastListingState == 2)
+                    if (_lastListingState == 2 || _lastListingState == 3)
                         DisplayModulePatches.DaemonClaimsEscape = true;
+
+                    // Detect login result in state 3 by checking displayCache
+                    if (_lastListingState == 3)
+                        DetectLoginResult(__instance);
 
                     // Clear stale pending button if it wasn't consumed this frame
                     if (_pendingButton != -1)
@@ -456,8 +477,12 @@ namespace HacknetAccess.Patches
                 case 0: // NeedLogin
                     if (enter)
                     {
+                        _loginAnnouncedUsers = false;
+                        _loginResult = -1;
+                        _loginInProgress = true;
+                        TerminalPatches.SuppressPromptAnnounce = true;
                         SetStateDirectly(3, "startLogin");
-                        DisplayModulePatches.ExitDisplayFocus();
+                        // Stay in display focus — login is handled via known credentials
                     }
                     else if (escape && !focused)
                         SetDisplayCommand("connect");
@@ -484,6 +509,34 @@ namespace HacknetAccess.Patches
                     }
                     else if (escape && !focused)
                         SetDisplayCommand("connect");
+                    break;
+
+                case 3: // Login
+                    if (up && _knownUserNames.Count > 0)
+                    {
+                        if (_loginUserIndex > 0) _loginUserIndex--;
+                        AnnounceCurrentUser();
+                    }
+                    else if (down && _knownUserNames.Count > 0)
+                    {
+                        if (_loginUserIndex < _knownUserNames.Count - 1) _loginUserIndex++;
+                        AnnounceCurrentUser();
+                    }
+                    else if (enter && _knownUserNames.Count > 0 && _loginResult == -1)
+                    {
+                        TerminalPatches.SuppressPromptAnnounce = true;
+                        ForceLoginWithUser(_loginUserIndex);
+                    }
+                    else if (enter && _loginResult == 0)
+                    {
+                        // Retry after failure
+                        RetryLogin();
+                    }
+                    else if (escape)
+                    {
+                        // Back to NeedLogin state
+                        CallLoginGoBack();
+                    }
                     break;
 
                 case 2: // Message (detail)
@@ -566,6 +619,220 @@ namespace HacknetAccess.Patches
         }
 
         /// <summary>
+        /// Build the list of known credentials from comp.users.
+        /// Filters by known=true and valid user type (0, 1, or 3).
+        /// </summary>
+        private static void BuildKnownUserList(object listing)
+        {
+            if (_knownUserNames.Count > 0) return; // Already built
+            _knownUserNames.Clear();
+            _knownUserPasses.Clear();
+            try
+            {
+                var type = listing.GetType();
+                var compField = AccessTools.Field(
+                    AccessTools.TypeByName("Hacknet.Daemon"), "comp");
+                var comp = compField?.GetValue(listing);
+                if (comp == null) return;
+
+                var users = AccessTools.Field(comp.GetType(), "users")
+                    ?.GetValue(comp) as IList;
+                if (users == null) return;
+
+                for (int i = 0; i < users.Count; i++)
+                {
+                    var user = users[i];
+                    var userType = user.GetType();
+                    bool known = (bool)AccessTools.Field(userType, "known").GetValue(user);
+                    byte acctType = (byte)AccessTools.Field(userType, "type").GetValue(user);
+
+                    // validUser: type 0 (admin), 1 (normal), or 3
+                    if (known && (acctType == 0 || acctType == 1 || acctType == 3))
+                    {
+                        string name = (string)AccessTools.Field(userType, "name").GetValue(user);
+                        string pass = (string)AccessTools.Field(userType, "pass").GetValue(user);
+                        _knownUserNames.Add(name);
+                        _knownUserPasses.Add(pass);
+                    }
+                }
+                DebugLogger.Log(LogCategory.Handler, "MissionListing",
+                    $"Known users: {_knownUserNames.Count}");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "MissionListing",
+                    $"BuildKnownUserList failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Announce the login screen with known credentials.
+        /// </summary>
+        private static void AnnounceLoginScreen()
+        {
+            if (_knownUserNames.Count > 0)
+            {
+                Plugin.Announce(Loc.Get("login.knownUsers", _knownUserNames.Count), false);
+                AnnounceCurrentUser();
+            }
+            else
+            {
+                Plugin.Announce(Loc.Get("login.noKnownUsers"), false);
+            }
+        }
+
+        /// <summary>
+        /// Announce the currently selected known user.
+        /// </summary>
+        private static void AnnounceCurrentUser()
+        {
+            if (_loginUserIndex < 0 || _loginUserIndex >= _knownUserNames.Count) return;
+            Plugin.Announce(Loc.Get("login.user",
+                _loginUserIndex + 1, _knownUserNames.Count,
+                _knownUserNames[_loginUserIndex]));
+        }
+
+        /// <summary>
+        /// Call forceLogin on the AuthenticatingDaemon with the selected credentials.
+        /// </summary>
+        private static void ForceLoginWithUser(int index)
+        {
+            if (_listingInstance == null || index < 0 || index >= _knownUserNames.Count) return;
+            try
+            {
+                var method = AccessTools.Method(
+                    AccessTools.TypeByName("Hacknet.AuthenticatingDaemon"),
+                    "forceLogin",
+                    new[] { typeof(string), typeof(string) });
+                method?.Invoke(_listingInstance,
+                    new object[] { _knownUserNames[index], _knownUserPasses[index] });
+                DebugLogger.Log(LogCategory.Handler, "MissionListing",
+                    $"ForceLogin called for user: {_knownUserNames[index]}");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "MissionListing",
+                    $"ForceLogin failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Detect login result by checking displayCache format.
+        /// displayCache has 4+ parts when login completes (part[3] is result code).
+        /// </summary>
+        private static void DetectLoginResult(object listing)
+        {
+            try
+            {
+                var osType = AccessTools.TypeByName("Hacknet.OS");
+                var os = AccessTools.Field(osType, "currentInstance")?.GetValue(null);
+                if (os == null) return;
+
+                string cache = (string)AccessTools.Field(osType, "displayCache")?.GetValue(os);
+                if (string.IsNullOrEmpty(cache)) return;
+
+                string[] separator = new[] { "#$#$#$$#$&$#$#$#$#" };
+                string[] parts = cache.Split(separator, StringSplitOptions.None);
+
+                if (parts.Length > 3 && parts[0] == "loginData")
+                {
+                    int result = Convert.ToInt32(parts[3]);
+                    if (result == 0 && _loginResult != 0)
+                    {
+                        _loginResult = 0;
+                        Plugin.Announce(Loc.Get("login.failed"), false);
+                    }
+                    // Success (result > 0) is handled by userLoggedIn → state change to 1
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "MissionListing",
+                    $"DetectLoginResult failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Retry login after failure — re-calls startLogin to reset the flow.
+        /// </summary>
+        private static void RetryLogin()
+        {
+            if (_listingInstance == null) return;
+            try
+            {
+                _loginResult = -1;
+                _loginAnnouncedUsers = false;
+                _knownUserNames.Clear();
+                _knownUserPasses.Clear();
+                var type = _listingInstance.GetType();
+                AccessTools.Method(type, "startLogin")?.Invoke(_listingInstance, null);
+                DebugLogger.Log(LogCategory.Handler, "MissionListing", "Login retry");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "MissionListing",
+                    $"RetryLogin failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Ensure display.command is set to the daemon's name so the daemon keeps drawing.
+        /// After forceLogin, terminal commands can change display.command away from the daemon.
+        /// </summary>
+        private static void EnsureDisplayCommand(object listing)
+        {
+            try
+            {
+                var daemonType = AccessTools.TypeByName("Hacknet.Daemon");
+                string daemonName = (string)AccessTools.Field(daemonType, "name")
+                    ?.GetValue(listing);
+                if (string.IsNullOrEmpty(daemonName)) return;
+
+                var osType = AccessTools.TypeByName("Hacknet.OS");
+                var os = AccessTools.Field(osType, "currentInstance")?.GetValue(null);
+                if (os == null) return;
+
+                var display = AccessTools.Field(osType, "display")?.GetValue(os);
+                if (display == null) return;
+
+                AccessTools.Field(display.GetType(), "command")?.SetValue(display, daemonName);
+                DebugLogger.Log(LogCategory.Handler, "MissionListing",
+                    $"Ensured display.command = {daemonName}");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "MissionListing",
+                    $"EnsureDisplayCommand failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Call loginGoBack to return to the NeedLogin state.
+        /// </summary>
+        private static void CallLoginGoBack()
+        {
+            if (_listingInstance == null) return;
+            try
+            {
+                var method = AccessTools.Method(
+                    AccessTools.TypeByName("Hacknet.AuthenticatingDaemon"), "loginGoBack");
+                method?.Invoke(_listingInstance, null);
+                _knownUserNames.Clear();
+                _knownUserPasses.Clear();
+                _loginAnnouncedUsers = false;
+                _loginResult = -1;
+                _loginInProgress = false;
+                TerminalPatches.SuppressPromptAnnounce = false;
+                DebugLogger.Log(LogCategory.Handler, "MissionListing", "Login go back");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "MissionListing",
+                    $"CallLoginGoBack failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Reset state when leaving listing context.
         /// </summary>
         public static void Reset()
@@ -580,6 +847,12 @@ namespace HacknetAccess.Patches
             _isPublic = false;
             _isMissionAssigner = false;
             _listingTitle = null;
+            _knownUserNames.Clear();
+            _knownUserPasses.Clear();
+            _loginUserIndex = 0;
+            _loginAnnouncedUsers = false;
+            _loginResult = -1;
+            _loginInProgress = false;
         }
     }
 }

@@ -415,7 +415,7 @@ namespace HacknetAccess.Patches
                     // Sync attachment index when on an attachment line
                     if (_lineToAttachmentMap.TryGetValue(_emailLineIndex, out int upAttIdx))
                         _attachmentIndex = upAttIdx;
-                    Plugin.Announce($"{_emailLineIndex + 1} of {_emailLines.Length}: {_emailLines[_emailLineIndex]}");
+                    Plugin.Announce($"{_emailLines[_emailLineIndex]}. {_emailLineIndex + 1} of {_emailLines.Length}");
                 }
                 else if (Plugin.IsKeyPressed(Keys.Down, currentState)
                     && _emailLines != null && _emailLines.Length > 0)
@@ -424,7 +424,7 @@ namespace HacknetAccess.Patches
                     // Sync attachment index when on an attachment line
                     if (_lineToAttachmentMap.TryGetValue(_emailLineIndex, out int downAttIdx))
                         _attachmentIndex = downAttIdx;
-                    Plugin.Announce($"{_emailLineIndex + 1} of {_emailLines.Length}: {_emailLines[_emailLineIndex]}");
+                    Plugin.Announce($"{_emailLines[_emailLineIndex]}. {_emailLineIndex + 1} of {_emailLines.Length}");
                 }
                 else if (Plugin.IsKeyPressed(Keys.Enter, currentState)
                     && _lineToAttachmentMap.ContainsKey(_emailLineIndex)

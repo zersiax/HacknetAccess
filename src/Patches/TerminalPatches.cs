@@ -22,6 +22,12 @@ namespace HacknetAccess.Patches
         private static string _lastCommand;
         private static readonly StringBuilder _singleLineBuffer = new StringBuilder();
         private const int MaxRecentLines = 100;
+
+        /// <summary>
+        /// When true, terminal prompt changes (username/password) are not announced.
+        /// Set by daemon login flows that handle their own announcements.
+        /// </summary>
+        public static bool SuppressPromptAnnounce { get; set; }
         private static bool _inOSWrite;
         private static int _recentOutputIndex = -1;
 
@@ -71,19 +77,33 @@ namespace HacknetAccess.Patches
 
                 FlushSingleLineBuffer();
 
-                string clean = CleanText(text);
-                if (string.IsNullOrWhiteSpace(clean)) return;
+                // Split multi-line output into separate buffer entries
+                // so each line is individually navigable with Ctrl+Up/Down
+                string[] lines = text.Split(new[] { "\r\n", "\n", "\r" },
+                    StringSplitOptions.RemoveEmptyEntries);
 
-                // During tab completion, count matches but don't announce individually
-                if (TabCompletePatch.IsInTabComplete)
+                var announcement = new StringBuilder();
+                foreach (string line in lines)
                 {
-                    _tabMatchCount++;
+                    string clean = CleanText(line);
+                    if (string.IsNullOrWhiteSpace(clean)) continue;
+
+                    // During tab completion, count matches but don't announce individually
+                    if (TabCompletePatch.IsInTabComplete)
+                    {
+                        _tabMatchCount++;
+                        TrackOutput(clean);
+                        continue;
+                    }
+
                     TrackOutput(clean);
-                    return;
+                    announcement.AppendLine(clean);
                 }
 
-                TrackOutput(clean);
-                Plugin.Announce(clean, false);
+                if (!TabCompletePatch.IsInTabComplete && announcement.Length > 0)
+                {
+                    Plugin.Announce(announcement.ToString().Trim(), false);
+                }
             }
         }
 
@@ -219,6 +239,13 @@ namespace HacknetAccess.Patches
                 {
                     _lastCommand = ___currentLine;
                     _recentOutputIndex = -1; // Reset nav position on new command
+
+                    // Clear command should also clear the review buffer
+                    if (___currentLine.Trim().Equals("clear", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ClearBuffer();
+                    }
+
                     DebugLogger.Log(LogCategory.Handler, "Terminal", $"Command: {___currentLine}");
                 }
             }
@@ -256,15 +283,28 @@ namespace HacknetAccess.Patches
         }
 
         /// <summary>
-        /// Track output for F2 re-read.
+        /// Track output for terminal review buffer.
+        /// Public so other patches (e.g. DisplayModulePatches) can feed lines in.
         /// </summary>
-        private static void TrackOutput(string text)
+        public static void TrackOutput(string text)
         {
             _recentOutput.Add(text);
             if (_recentOutput.Count > MaxRecentLines)
             {
                 _recentOutput.RemoveAt(0);
             }
+        }
+
+        /// <summary>
+        /// Clear the terminal review buffer.
+        /// Called when the user runs the clear command.
+        /// </summary>
+        public static void ClearBuffer()
+        {
+            _recentOutput.Clear();
+            _recentOutputIndex = -1;
+            _currentWords = null;
+            _wordIndex = -1;
         }
 
         /// <summary>
@@ -312,9 +352,7 @@ namespace HacknetAccess.Patches
                         _recentOutputIndex--;
                     ResetWordNav();
                     LastNavMode = NavMode.Line;
-                    Plugin.Announce(Loc.Get("terminal.line",
-                        _recentOutputIndex + 1, _recentOutput.Count,
-                        _recentOutput[_recentOutputIndex]));
+                    Plugin.Announce(_recentOutput[_recentOutputIndex]);
                 }
                 else if (Plugin.IsKeyPressed(Keys.Down, currentState))
                 {
@@ -324,9 +362,7 @@ namespace HacknetAccess.Patches
                         _recentOutputIndex++;
                     ResetWordNav();
                     LastNavMode = NavMode.Line;
-                    Plugin.Announce(Loc.Get("terminal.line",
-                        _recentOutputIndex + 1, _recentOutput.Count,
-                        _recentOutput[_recentOutputIndex]));
+                    Plugin.Announce(_recentOutput[_recentOutputIndex]);
                 }
                 else if (Plugin.IsKeyPressed(Keys.Left, currentState)
                     && _recentOutputIndex >= 0)
@@ -336,9 +372,7 @@ namespace HacknetAccess.Patches
                     {
                         _wordIndex--;
                         LastNavMode = NavMode.Word;
-                        Plugin.Announce(Loc.Get("terminal.word",
-                            _wordIndex + 1, _currentWords.Length,
-                            _currentWords[_wordIndex]));
+                        Plugin.Announce(_currentWords[_wordIndex]);
                     }
                 }
                 else if (Plugin.IsKeyPressed(Keys.Right, currentState)
@@ -350,9 +384,15 @@ namespace HacknetAccess.Patches
                     {
                         _wordIndex++;
                         LastNavMode = NavMode.Word;
-                        Plugin.Announce(Loc.Get("terminal.word",
-                            _wordIndex + 1, _currentWords.Length,
-                            _currentWords[_wordIndex]));
+                        Plugin.Announce(_currentWords[_wordIndex]);
+                    }
+                }
+                else if (Plugin.IsKeyPressed(Keys.Enter, currentState))
+                {
+                    string text = GetCopyText();
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        Plugin.Announce(SpellOut(text));
                     }
                 }
             }
@@ -371,6 +411,56 @@ namespace HacknetAccess.Patches
                 && _currentWords != null && _wordIndex >= 0 && _wordIndex < _currentWords.Length)
                 return _currentWords[_wordIndex];
             return null;
+        }
+
+        /// <summary>
+        /// Spell out text character by character, separated by spaces.
+        /// Replaces common symbols with spoken names.
+        /// </summary>
+        private static string SpellOut(string text)
+        {
+            var sb = new StringBuilder();
+            foreach (char c in text)
+            {
+                if (sb.Length > 0) sb.Append(", ");
+                switch (c)
+                {
+                    case ' ': sb.Append("space"); break;
+                    case '.': sb.Append("dot"); break;
+                    case '/': sb.Append("slash"); break;
+                    case '\\': sb.Append("backslash"); break;
+                    case '@': sb.Append("at"); break;
+                    case ':': sb.Append("colon"); break;
+                    case '-': sb.Append("dash"); break;
+                    case '_': sb.Append("underscore"); break;
+                    case '(': sb.Append("open paren"); break;
+                    case ')': sb.Append("close paren"); break;
+                    case '[': sb.Append("open bracket"); break;
+                    case ']': sb.Append("close bracket"); break;
+                    case '{': sb.Append("open brace"); break;
+                    case '}': sb.Append("close brace"); break;
+                    case '#': sb.Append("hash"); break;
+                    case '!': sb.Append("exclamation"); break;
+                    case '?': sb.Append("question"); break;
+                    case ',': sb.Append("comma"); break;
+                    case ';': sb.Append("semicolon"); break;
+                    case '=': sb.Append("equals"); break;
+                    case '+': sb.Append("plus"); break;
+                    case '*': sb.Append("star"); break;
+                    case '&': sb.Append("ampersand"); break;
+                    case '|': sb.Append("pipe"); break;
+                    case '<': sb.Append("less than"); break;
+                    case '>': sb.Append("greater than"); break;
+                    case '"': sb.Append("quote"); break;
+                    case '\'': sb.Append("apostrophe"); break;
+                    case '~': sb.Append("tilde"); break;
+                    case '$': sb.Append("dollar"); break;
+                    case '%': sb.Append("percent"); break;
+                    case '^': sb.Append("caret"); break;
+                    default: sb.Append(c); break;
+                }
+            }
+            return sb.ToString();
         }
 
         private static void ResetWordNav()
@@ -458,13 +548,21 @@ namespace HacknetAccess.Patches
                     _lastPrompt = prompt;
 
                     bool masking = (bool)(_maskingTextField?.GetValue(null) ?? false);
-                    if (masking)
+                    if (SuppressPromptAnnounce)
                     {
-                        Plugin.Announce(Loc.Get("terminal.promptPassword", prompt), false);
+                        DebugLogger.Log(LogCategory.Handler, "Terminal",
+                            $"Prompt suppressed (daemon login): {prompt}");
                     }
                     else
                     {
-                        Plugin.Announce(Loc.Get("terminal.promptInput", prompt), false);
+                        if (masking)
+                        {
+                            Plugin.Announce(Loc.Get("terminal.promptPassword", prompt), false);
+                        }
+                        else
+                        {
+                            Plugin.Announce(Loc.Get("terminal.promptInput", prompt), false);
+                        }
                     }
                     DebugLogger.Log(LogCategory.Handler, "Terminal",
                         $"Prompt changed: {prompt} (masked={masking})");
