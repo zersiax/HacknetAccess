@@ -47,6 +47,13 @@ namespace HacknetAccess.Patches
         private static int _attachmentIndex;
         private static Dictionary<int, int> _lineToAttachmentMap = new Dictionary<int, int>();
 
+        // Daemon login credential picker (for connecting to mail server via network map)
+        private static List<string> _knownUserNames = new List<string>();
+        private static List<string> _knownUserPasses = new List<string>();
+        private static int _loginUserIndex;
+        private static bool _loginMode;
+        private static object _currentMailServer;
+
         /// <summary>
         /// Prefix on MailServer.draw — mark mail as active.
         /// </summary>
@@ -92,7 +99,20 @@ namespace HacknetAccess.Patches
                     switch (___state)
                     {
                         case 0:
-                            Plugin.Announce(Loc.Get("mail.server"), false);
+                            _currentMailServer = __instance;
+                            _loginMode = false;
+                            BuildKnownUsers(__instance);
+                            if (_knownUserNames.Count > 0)
+                            {
+                                Plugin.Announce(Loc.Get("login.knownUsers", _knownUserNames.Count), false);
+                                _loginMode = true;
+                                _loginUserIndex = 0;
+                                AnnounceLoginUser();
+                            }
+                            else
+                            {
+                                Plugin.Announce(Loc.Get("login.noKnownUsers"), false);
+                            }
                             break;
                         case 3:
                             BuildInboxList(__instance);
@@ -221,6 +241,93 @@ namespace HacknetAccess.Patches
                 DebugLogger.Log(LogCategory.Handler, "Mail",
                     $"BuildInboxList failed: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Build known user credentials from the connected computer's users list.
+        /// </summary>
+        private static void BuildKnownUsers(object mailServer)
+        {
+            _knownUserNames.Clear();
+            _knownUserPasses.Clear();
+            _loginUserIndex = 0;
+
+            try
+            {
+                var compField = AccessTools.Field(
+                    AccessTools.TypeByName("Hacknet.Daemon"), "comp");
+                var comp = compField?.GetValue(mailServer);
+                if (comp == null) return;
+
+                var users = AccessTools.Field(comp.GetType(), "users")
+                    ?.GetValue(comp) as IList;
+                if (users == null) return;
+
+                for (int i = 0; i < users.Count; i++)
+                {
+                    var user = users[i];
+                    var userType = user.GetType();
+                    bool known = (bool)AccessTools.Field(userType, "known").GetValue(user);
+                    byte acctType = (byte)AccessTools.Field(userType, "type").GetValue(user);
+
+                    if (known && (acctType == 0 || acctType == 1 || acctType == 3))
+                    {
+                        string name = (string)AccessTools.Field(userType, "name").GetValue(user);
+                        string pass = (string)AccessTools.Field(userType, "pass").GetValue(user);
+                        _knownUserNames.Add(name);
+                        _knownUserPasses.Add(pass);
+                    }
+                }
+
+                DebugLogger.Log(LogCategory.Handler, "Mail",
+                    $"Known users: {_knownUserNames.Count}");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Mail",
+                    $"BuildKnownUsers failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Log in to the mail server with the given credentials.
+        /// Calls viewInbox directly to bypass the terminal login prompt.
+        /// </summary>
+        private static void LoginWithCredentials(int index)
+        {
+            if (_currentMailServer == null || index < 0 || index >= _knownUserNames.Count) return;
+
+            try
+            {
+                // Build a UserDetail struct to pass to viewInbox
+                var userDetailType = AccessTools.TypeByName("Hacknet.UserDetail");
+                var ctor = AccessTools.Constructor(userDetailType, new Type[] { typeof(string), typeof(string), typeof(byte) });
+                var userDetail = ctor.Invoke(new object[] { _knownUserNames[index], _knownUserPasses[index], (byte)2 });
+
+                var viewInboxMethod = AccessTools.Method(_currentMailServer.GetType(), "viewInbox");
+                viewInboxMethod?.Invoke(_currentMailServer, new object[] { userDetail });
+
+                DebugLogger.Log(LogCategory.Handler, "Mail",
+                    $"Logged in as: {_knownUserNames[index]}");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Mail",
+                    $"LoginWithCredentials failed: {ex.Message}");
+                Plugin.Announce(Loc.Get("login.failed"));
+            }
+        }
+
+        /// <summary>
+        /// Announce the currently selected known user.
+        /// </summary>
+        private static void AnnounceLoginUser()
+        {
+            if (_loginUserIndex < 0 || _loginUserIndex >= _knownUserNames.Count) return;
+            Plugin.Announce(Loc.Get("login.user",
+                _loginUserIndex + 1, _knownUserNames.Count,
+                _knownUserNames[_loginUserIndex],
+                _knownUserPasses[_loginUserIndex]));
         }
 
         /// <summary>
@@ -372,14 +479,35 @@ namespace HacknetAccess.Patches
 
             if (_lastState == 0)
             {
-                // Login screen — Enter to login, Escape to exit
-                if (Plugin.IsKeyPressed(Keys.Enter, currentState))
+                if (_loginMode && _knownUserNames.Count > 0)
                 {
-                    _pendingButton = 800002;
+                    // Known-credential picker
+                    if (Plugin.IsKeyPressed(Keys.Up, currentState))
+                    {
+                        if (_loginUserIndex > 0) _loginUserIndex--;
+                        AnnounceLoginUser();
+                    }
+                    else if (Plugin.IsKeyPressed(Keys.Down, currentState))
+                    {
+                        if (_loginUserIndex < _knownUserNames.Count - 1) _loginUserIndex++;
+                        AnnounceLoginUser();
+                    }
+                    else if (Plugin.IsKeyPressed(Keys.Enter, currentState))
+                    {
+                        LoginWithCredentials(_loginUserIndex);
+                    }
+                    else if (Plugin.IsKeyPressed(Keys.Escape, currentState))
+                    {
+                        _pendingButton = 800003;
+                    }
                 }
-                else if (Plugin.IsKeyPressed(Keys.Escape, currentState))
+                else
                 {
-                    _pendingButton = 800003;
+                    // No known users — Escape to exit
+                    if (Plugin.IsKeyPressed(Keys.Escape, currentState))
+                    {
+                        _pendingButton = 800003;
+                    }
                 }
             }
             else if (_lastState == 3)

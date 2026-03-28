@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using HarmonyLib;
 
 namespace HacknetAccess.Patches
@@ -18,9 +19,39 @@ namespace HacknetAccess.Patches
         // IRC: track log data length to detect new messages
         private static int _lastIrcLogLength;
         private static string _lastIrcLogData;
+        private static int _ircDrawFrame;
 
-        // Web: track last announced URL
+        // Web: track last announced URL and content
         private static string _lastWebUrl;
+        private static string _lastWebContent;
+        private static int _webDrawFrame;
+
+        /// <summary>
+        /// Whether a simple daemon (IRC or Web) is currently drawing.
+        /// Uses frame-counter pattern (like MailPatches) so the flag
+        /// survives the Update→Draw phase gap.
+        /// </summary>
+        public static bool IsActive =>
+            (AccessStateManager.FrameCount - _ircDrawFrame) <= 2
+            || (AccessStateManager.FrameCount - _webDrawFrame) <= 2;
+
+        /// <summary>
+        /// Get the last extracted web page text for F5 re-read.
+        /// </summary>
+        public static string LastWebContent => _lastWebContent;
+
+        /// <summary>
+        /// Reset all cached state. Called on disconnect.
+        /// </summary>
+        public static void Reset()
+        {
+            _lastIrcLogLength = 0;
+            _lastIrcLogData = null;
+            _ircDrawFrame = 0;
+            _lastWebUrl = null;
+            _lastWebContent = null;
+            _webDrawFrame = 0;
+        }
 
         /// <summary>
         /// After IRCDaemon.draw, announce new chat messages.
@@ -39,6 +70,7 @@ namespace HacknetAccess.Patches
 
             static void Postfix(object __instance)
             {
+                _ircDrawFrame = AccessStateManager.FrameCount;
                 try
                 {
                     var type = __instance.GetType();
@@ -153,6 +185,59 @@ namespace HacknetAccess.Patches
         }
 
         /// <summary>
+        /// Extract readable text from a WebServerDaemon's loaded HTML page.
+        /// Reads lastLoadedFile.data, strips HTML tags, collapses whitespace.
+        /// </summary>
+        private static string ExtractWebText(object webDaemon)
+        {
+            try
+            {
+                var type = webDaemon.GetType();
+                var fileEntry = AccessTools.Field(type, "lastLoadedFile")
+                    ?.GetValue(webDaemon);
+                if (fileEntry == null) return null;
+
+                string html = (string)AccessTools.Field(fileEntry.GetType(), "data")
+                    ?.GetValue(fileEntry);
+                if (string.IsNullOrEmpty(html)) return null;
+
+                // Strip script and style blocks entirely
+                string text = Regex.Replace(html, @"<(script|style)[^>]*>[\s\S]*?</\1>",
+                    "", RegexOptions.IgnoreCase);
+                // Replace <br>, <p>, <div>, <li>, <tr>, <h1>-<h6> with newlines
+                text = Regex.Replace(text, @"<(br|/p|/div|/li|/tr|/h[1-6])[^>]*>",
+                    "\n", RegexOptions.IgnoreCase);
+                // Strip remaining tags
+                text = Regex.Replace(text, @"<[^>]+>", " ");
+                // Decode common HTML entities
+                text = text.Replace("&amp;", "&").Replace("&lt;", "<")
+                    .Replace("&gt;", ">").Replace("&quot;", "\"")
+                    .Replace("&#39;", "'").Replace("&nbsp;", " ");
+                // Collapse whitespace within lines, preserve line breaks
+                var lines = text.Split(new[] { '\n', '\r' },
+                    StringSplitOptions.RemoveEmptyEntries);
+                var sb = new StringBuilder();
+                foreach (string line in lines)
+                {
+                    string trimmed = Regex.Replace(line, @"\s+", " ").Trim();
+                    if (trimmed.Length > 0)
+                    {
+                        if (sb.Length > 0) sb.Append(". ");
+                        sb.Append(trimmed);
+                    }
+                }
+                string result = sb.ToString();
+                return result.Length > 0 ? result : null;
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "WebServer",
+                    $"ExtractWebText failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Format a single IRC log entry ("timestamp//author//message") for announcement.
         /// </summary>
         private static string FormatIrcEntry(string entry)
@@ -190,21 +275,34 @@ namespace HacknetAccess.Patches
 
             static void Postfix(object __instance)
             {
+                _webDrawFrame = AccessStateManager.FrameCount;
                 try
                 {
                     var type = __instance.GetType();
                     string url = (string)AccessTools.Field(type, "saveURL")
                         ?.GetValue(__instance);
-                    if (url == null || url == _lastWebUrl) return;
+                    if (url == null) return;
+
+                    // Extract text from lastLoadedFile.data (HTML content)
+                    string pageText = ExtractWebText(__instance);
+                    _lastWebContent = pageText;
+
+                    if (url == _lastWebUrl) return;
                     _lastWebUrl = url;
 
-                    // Get the server name from the daemon
-                    string serverName = (string)AccessTools.Field(
-                        AccessTools.TypeByName("Hacknet.Daemon"), "name")
-                        ?.GetValue(__instance) ?? "Web Server";
-
-                    Plugin.Announce(Loc.Get("daemon.webPage",
-                        serverName + "/" + url), false);
+                    if (!string.IsNullOrEmpty(pageText))
+                    {
+                        Plugin.Announce(Loc.Get("daemon.webPage", pageText), false);
+                    }
+                    else
+                    {
+                        // Fallback: announce server name + URL
+                        string serverName = (string)AccessTools.Field(
+                            AccessTools.TypeByName("Hacknet.Daemon"), "name")
+                            ?.GetValue(__instance) ?? "Web Server";
+                        Plugin.Announce(Loc.Get("daemon.webPage",
+                            serverName + "/" + url), false);
+                    }
                     DebugLogger.Log(LogCategory.Handler, "WebServer",
                         $"Page: {url}");
                 }

@@ -238,7 +238,6 @@ namespace HacknetAccess.Patches
                 if (!string.IsNullOrEmpty(___currentLine))
                 {
                     _lastCommand = ___currentLine;
-                    _recentOutputIndex = -1; // Reset nav position on new command
 
                     // Clear command should also clear the review buffer
                     if (___currentLine.Trim().Equals("clear", StringComparison.OrdinalIgnoreCase))
@@ -342,7 +341,8 @@ namespace HacknetAccess.Patches
             if (ctrl && _recentOutput.Count > 0
                 && !DisplayModulePatches.DisplayHasFocus
                 && !NetworkMapPatches.HasFocus
-                && !NotesPatches.HasFocus)
+                && !NotesPatches.HasFocus
+                && !MailPatches.IsActive)
             {
                 if (Plugin.IsKeyPressed(Keys.Up, currentState))
                 {
@@ -394,6 +394,24 @@ namespace HacknetAccess.Patches
                     {
                         Plugin.Announce(SpellOut(text));
                     }
+                }
+                else if (Plugin.IsKeyPressed(Keys.End, currentState))
+                {
+                    _recentOutputIndex = _recentOutput.Count - 1;
+                    ResetWordNav();
+                    LastNavMode = NavMode.Line;
+                    Plugin.Announce(Loc.Get("terminal.line",
+                        _recentOutputIndex + 1, _recentOutput.Count,
+                        _recentOutput[_recentOutputIndex]));
+                }
+                else if (Plugin.IsKeyPressed(Keys.Home, currentState))
+                {
+                    _recentOutputIndex = 0;
+                    ResetWordNav();
+                    LastNavMode = NavMode.Line;
+                    Plugin.Announce(Loc.Get("terminal.line",
+                        _recentOutputIndex + 1, _recentOutput.Count,
+                        _recentOutput[_recentOutputIndex]));
                 }
             }
         }

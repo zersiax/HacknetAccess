@@ -218,8 +218,9 @@ namespace HacknetAccess.Patches
                         .GetValue(file);
                     if (fileName == null) continue;
 
-                    // Key is file name without extension
-                    string key = fileName.Replace(".txt", "");
+                    // Key is the part after '#' in the filename, matching getIDStringForContractFile
+                    int hashIndex = fileName.IndexOf('#');
+                    string key = hashIndex > -1 ? fileName.Substring(hashIndex + 1) : "";
 
                     if (listingMissions.Contains(key))
                     {
@@ -473,7 +474,6 @@ namespace HacknetAccess.Patches
         /// </summary>
         private static void BuildKnownUserList(object hub)
         {
-            if (_knownUserNames.Count > 0) return;
             _knownUserNames.Clear();
             _knownUserPasses.Clear();
             try
@@ -536,7 +536,8 @@ namespace HacknetAccess.Patches
             if (_loginUserIndex < 0 || _loginUserIndex >= _knownUserNames.Count) return;
             Plugin.Announce(Loc.Get("login.user",
                 _loginUserIndex + 1, _knownUserNames.Count,
-                _knownUserNames[_loginUserIndex]));
+                _knownUserNames[_loginUserIndex],
+                _knownUserPasses[_loginUserIndex]));
         }
 
         /// <summary>

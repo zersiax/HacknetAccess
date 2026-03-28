@@ -624,7 +624,6 @@ namespace HacknetAccess.Patches
         /// </summary>
         private static void BuildKnownUserList(object listing)
         {
-            if (_knownUserNames.Count > 0) return; // Already built
             _knownUserNames.Clear();
             _knownUserPasses.Clear();
             try
@@ -689,7 +688,8 @@ namespace HacknetAccess.Patches
             if (_loginUserIndex < 0 || _loginUserIndex >= _knownUserNames.Count) return;
             Plugin.Announce(Loc.Get("login.user",
                 _loginUserIndex + 1, _knownUserNames.Count,
-                _knownUserNames[_loginUserIndex]));
+                _knownUserNames[_loginUserIndex],
+                _knownUserPasses[_loginUserIndex]));
         }
 
         /// <summary>

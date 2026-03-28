@@ -23,6 +23,16 @@ namespace HacknetAccess.Patches
         // Generic progress tracking per exe instance (keyed by PID)
         private static readonly Dictionary<int, int> _progressThresholds = new Dictionary<int, int>();
 
+        // Track which shells have been announced as "trap ready"
+        private static readonly HashSet<int> _trapReadyAnnounced = new HashSet<int>();
+        private static int _lastTrapReadyCount;
+
+        // Batch trap-triggered announcements (multiple shells fire on same frame)
+        private static List<string> _trapTriggeredIPs = new List<string>();
+
+        // Track opponent location for trap trigger alerts
+        private static string _lastOpponentLocation = "";
+
         /// <summary>
         /// Postfix on PortHackExe.Update — announce progress at 25/50/75%.
         /// </summary>
@@ -140,6 +150,51 @@ namespace HacknetAccess.Patches
         }
 
         /// <summary>
+        /// Postfix on ShellExe.Update — detect trap loading→ready transition.
+        /// Announces once per shell when ramCost reaches targetRamUse in trap state.
+        /// </summary>
+        [HarmonyPatch]
+        static class ShellUpdatePatch
+        {
+            static MethodBase TargetMethod()
+            {
+                return AccessTools.Method(
+                    AccessTools.TypeByName("Hacknet.ShellExe"),
+                    "Update", new[] { typeof(float) });
+            }
+
+            static void Postfix(object __instance)
+            {
+                try
+                {
+                    var shellType = __instance.GetType();
+                    var exeModType = AccessTools.TypeByName("Hacknet.ExeModule");
+                    int state = (int)AccessTools.Field(shellType, "state").GetValue(__instance);
+                    if (state != 2) return;
+
+                    int ramCost = (int)AccessTools.Field(exeModType, "ramCost").GetValue(__instance);
+                    int targetRam = (int)AccessTools.Field(shellType, "targetRamUse").GetValue(__instance);
+                    if (ramCost != targetRam) return;
+
+                    int hash = __instance.GetHashCode();
+                    if (_trapReadyAnnounced.Contains(hash)) return;
+                    _trapReadyAnnounced.Add(hash);
+
+                    // Count total ready traps to batch the announcement
+                    _lastTrapReadyCount++;
+
+                    // Defer announcement by 1 frame to batch multiple shells
+                    // (they often complete on the same frame)
+                }
+                catch (Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "ExeModule",
+                        $"ShellUpdate trap check failed: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
         /// Postfix on ShellExe.StartOverload — announce overload started.
         /// </summary>
         [HarmonyPatch]
@@ -189,6 +244,9 @@ namespace HacknetAccess.Patches
             {
                 try
                 {
+                    // Clear trap-ready tracking so it can re-announce after next set
+                    _trapReadyAnnounced.Remove(__instance.GetHashCode());
+
                     string destIP = (string)AccessTools.Field(
                         __instance.GetType(), "destinationIP")
                         .GetValue(__instance);
@@ -201,7 +259,8 @@ namespace HacknetAccess.Patches
                     }
                     else if (action == 2)
                     {
-                        Plugin.Announce(Loc.Get("exe.shellTrapDone", destIP));
+                        // Batch: multiple shells trigger on the same frame
+                        _trapTriggeredIPs.Add(destIP);
                         DebugLogger.Log(LogCategory.Handler, "ExeModule",
                             $"Shell trap triggered on {destIP}");
                     }
@@ -526,12 +585,33 @@ namespace HacknetAccess.Patches
                 _pendingShellButtons.Clear();
             }
 
+            // Announce traps that were triggered last frame (batched by IP)
+            if (_trapTriggeredIPs.Count > 0)
+            {
+                string ips = string.Join(", ", _trapTriggeredIPs);
+                Plugin.Announce(Loc.Get("exe.shellTrapDone", ips));
+                _trapTriggeredIPs.Clear();
+            }
+
+            // Announce traps that became ready since last frame
+            if (_lastTrapReadyCount > 0)
+            {
+                Plugin.Announce(Loc.Get("exe.trapsReady", _lastTrapReadyCount));
+                DebugLogger.Log(LogCategory.Handler, "ExeModule",
+                    $"{_lastTrapReadyCount} trap(s) ready to trigger");
+                _lastTrapReadyCount = 0;
+            }
+
+            // Monitor opponent location — announce when opponent reaches a trapped machine
+            CheckOpponentLocation();
+
             bool ctrl = currentState.IsKeyDown(Keys.LeftControl)
                      || currentState.IsKeyDown(Keys.RightControl);
             if (!ctrl) return;
 
             if (!Plugin.IsKeyPressed(Keys.O, currentState)
-                && !Plugin.IsKeyPressed(Keys.T, currentState))
+                && !Plugin.IsKeyPressed(Keys.T, currentState)
+                && !Plugin.IsKeyPressed(Keys.W, currentState))
                 return;
 
             try
@@ -540,15 +620,26 @@ namespace HacknetAccess.Patches
                 var os = AccessTools.Field(osType, "currentInstance")?.GetValue(null);
                 if (os == null) return;
 
-                var shells = AccessTools.Field(osType, "shells")?.GetValue(os) as IList;
-                if (shells == null || shells.Count == 0)
+                var shellsRaw = AccessTools.Field(osType, "shells")?.GetValue(os) as IList;
+                var exes = AccessTools.Field(osType, "exes")?.GetValue(os) as IList;
+                if (exes == null) return;
+
+                // Filter to shells still in exes (reboot clears exes but not shells)
+                var shells = new List<object>();
+                if (shellsRaw != null)
+                {
+                    foreach (var s in shellsRaw)
+                    {
+                        if (exes.Contains(s))
+                            shells.Add(s);
+                    }
+                }
+
+                if (shells.Count == 0)
                 {
                     Plugin.Announce(Loc.Get("exe.noShells"));
                     return;
                 }
-
-                var exes = AccessTools.Field(osType, "exes")?.GetValue(os) as IList;
-                if (exes == null) return;
 
                 if (Plugin.IsKeyPressed(Keys.O, currentState))
                 {
@@ -565,14 +656,16 @@ namespace HacknetAccess.Patches
                 }
                 else if (Plugin.IsKeyPressed(Keys.T, currentState))
                 {
-                    // Check if any shell has a ready trigger (state==2, RAM allocated)
+                    // Check shell states to decide trap vs trigger
                     var shellType = AccessTools.TypeByName("Hacknet.ShellExe");
                     var exeModType = AccessTools.TypeByName("Hacknet.ExeModule");
                     var stateField = AccessTools.Field(shellType, "state");
                     var ramCostField = AccessTools.Field(exeModType, "ramCost");
                     var targetRamField = AccessTools.Field(shellType, "targetRamUse");
 
-                    bool anyTriggerReady = false;
+                    int triggerCount = 0;
+                    int trapLoadingCount = 0;
+                    int idleCount = 0;
                     foreach (var shell in shells)
                     {
                         int state = (int)stateField.GetValue(shell);
@@ -580,38 +673,151 @@ namespace HacknetAccess.Patches
                         int targetRam = (int)targetRamField.GetValue(shell);
                         if (state == 2 && ramCost == targetRam)
                         {
-                            anyTriggerReady = true;
+                            // Trap ready — queue trigger
+                            triggerCount++;
                             int idx = exes.IndexOf(shell);
                             if (idx >= 0)
                                 _pendingShellButtons.Add(95000 + idx);
                         }
+                        else if (state == 2)
+                        {
+                            trapLoadingCount++;
+                        }
+                        else if (state == 0)
+                        {
+                            idleCount++;
+                        }
                     }
 
-                    if (anyTriggerReady)
+                    if (triggerCount > 0)
                     {
-                        Plugin.Announce(Loc.Get("exe.triggerAll"));
+                        Plugin.Announce(Loc.Get("exe.triggerAll", triggerCount));
                         DebugLogger.Log(LogCategory.Handler, "ExeModule",
-                            "Trigger queued for ready shell(s)");
+                            $"Trigger queued for {triggerCount} shell(s)");
+                    }
+                    else if (trapLoadingCount > 0)
+                    {
+                        // Traps are loading but not ready yet
+                        Plugin.Announce(Loc.Get("exe.trapLoading", trapLoadingCount));
+                        DebugLogger.Log(LogCategory.Handler, "ExeModule",
+                            $"{trapLoadingCount} trap(s) still loading");
+                    }
+                    else if (idleCount > 0)
+                    {
+                        // Set trap on idle shells
+                        foreach (var shell in shells)
+                        {
+                            int state = (int)stateField.GetValue(shell);
+                            if (state == 0)
+                            {
+                                int idx = exes.IndexOf(shell);
+                                if (idx >= 0)
+                                    _pendingShellButtons.Add(89300 + idx);
+                            }
+                        }
+                        Plugin.Announce(Loc.Get("exe.trapAll", idleCount));
+                        DebugLogger.Log(LogCategory.Handler, "ExeModule",
+                            $"Trap queued for {idleCount} shell(s)");
                     }
                     else
                     {
-                        // Set trap on all shells
-                        foreach (var shell in shells)
-                        {
-                            int idx = exes.IndexOf(shell);
-                            if (idx >= 0)
-                                _pendingShellButtons.Add(89300 + idx);
-                        }
-                        Plugin.Announce(Loc.Get("exe.trapAll", shells.Count));
-                        DebugLogger.Log(LogCategory.Handler, "ExeModule",
-                            $"Trap queued for {shells.Count} shell(s)");
+                        Plugin.Announce(Loc.Get("exe.noShells"));
                     }
+                }
+                else if (Plugin.IsKeyPressed(Keys.W, currentState))
+                {
+                    // Close all shells
+                    foreach (var shell in shells)
+                    {
+                        int idx = exes.IndexOf(shell);
+                        if (idx >= 0)
+                            _pendingShellButtons.Add(89101 + idx);
+                    }
+                    Plugin.Announce(Loc.Get("exe.closeAll", shells.Count));
+                    DebugLogger.Log(LogCategory.Handler, "ExeModule",
+                        $"Close queued for {shells.Count} shell(s)");
                 }
             }
             catch (Exception ex)
             {
                 DebugLogger.Log(LogCategory.Handler, "ExeModule",
                     $"ProcessInput failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Monitor os.opponentLocation each frame.
+        /// When an opponent moves to a machine where the player has a trap set,
+        /// announce urgently so the screen reader user knows to trigger (Ctrl+T).
+        /// Also announces general opponent location changes.
+        /// </summary>
+        private static void CheckOpponentLocation()
+        {
+            try
+            {
+                var osType = AccessTools.TypeByName("Hacknet.OS");
+                var os = AccessTools.Field(osType, "currentInstance")?.GetValue(null);
+                if (os == null) return;
+
+                string location = (string)AccessTools.Field(osType, "opponentLocation")
+                    ?.GetValue(os) ?? "";
+
+                if (location == _lastOpponentLocation) return;
+                string previous = _lastOpponentLocation;
+                _lastOpponentLocation = location;
+
+                if (string.IsNullOrEmpty(location))
+                {
+                    if (!string.IsNullOrEmpty(previous))
+                    {
+                        Plugin.Announce(Loc.Get("exe.opponentGone"), false);
+                        DebugLogger.Log(LogCategory.Handler, "ExeModule",
+                            "Opponent disconnected");
+                    }
+                    return;
+                }
+
+                // Check if any shell trap is set on this machine
+                var shellsRaw = AccessTools.Field(osType, "shells")?.GetValue(os) as IList;
+                var exes = AccessTools.Field(osType, "exes")?.GetValue(os) as IList;
+                var shellType = AccessTools.TypeByName("Hacknet.ShellExe");
+                var exeModType = AccessTools.TypeByName("Hacknet.ExeModule");
+                var stateField = AccessTools.Field(shellType, "state");
+                var targetField = AccessTools.Field(exeModType, "targetIP");
+
+                bool hasTrapOnTarget = false;
+                if (shellsRaw != null && exes != null)
+                {
+                    foreach (var shell in shellsRaw)
+                    {
+                        if (!exes.Contains(shell)) continue;
+                        int state = (int)stateField.GetValue(shell);
+                        string targetIP = (string)targetField.GetValue(shell);
+                        if (state == 2 && targetIP == location)
+                        {
+                            hasTrapOnTarget = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (hasTrapOnTarget)
+                {
+                    Plugin.Announce(Loc.Get("exe.opponentOnTrap", location));
+                    DebugLogger.Log(LogCategory.Handler, "ExeModule",
+                        $"Opponent on trapped machine: {location}");
+                }
+                else
+                {
+                    Plugin.Announce(Loc.Get("exe.opponentMoved", location));
+                    DebugLogger.Log(LogCategory.Handler, "ExeModule",
+                        $"Opponent moved to: {location}");
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "ExeModule",
+                    $"CheckOpponentLocation failed: {ex.Message}");
             }
         }
     }

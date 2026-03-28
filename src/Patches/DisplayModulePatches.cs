@@ -23,6 +23,8 @@ namespace HacknetAccess.Patches
         private static string _lastLsContent;
         private static List<string> _lsItems = new List<string>();
         private static KeyboardState _prevKeyState;
+        private static bool _wasConnected;
+        private static int _focusEnteredFrame;
 
         /// <summary>
         /// When true, display focus will be restored on the next ProcessInput call.
@@ -360,7 +362,9 @@ namespace HacknetAccess.Patches
             return MissionListingPatches.IsActive
                 || MissionHubPatches.IsActive
                 || MessageBoardPatches.IsActive
-                || DatabaseDaemonPatches.IsActive;
+                || DatabaseDaemonPatches.IsActive
+                || MailPatches.IsActive
+                || DaemonPatches.IsActive;
         }
 
         /// <summary>
@@ -425,16 +429,23 @@ namespace HacknetAccess.Patches
                 if (os == null) return;
 
                 var connComp = AccessTools.Field(osType, "connectedComp")?.GetValue(os);
-                if (connComp != null) return;
+                bool isConnected = connComp != null;
 
-                // Not connected — clear everything
-                if (_lastDisplayContent == null && _lastLsContent == null
-                    && _lastDisplayMode == null) return; // Already clean
+                if (isConnected)
+                {
+                    _wasConnected = true;
+                    return;
+                }
+
+                // Only reset on transition from connected → disconnected
+                if (!_wasConnected) return;
+                _wasConnected = false;
 
                 MissionListingPatches.Reset();
                 MissionHubPatches.Reset();
                 MessageBoardPatches.Reset();
                 DatabaseDaemonPatches.Reset();
+                DaemonPatches.Reset();
                 _lastDisplayContent = null;
                 _lastLsContent = null;
                 _lastDisplayMode = null;
@@ -481,6 +492,7 @@ namespace HacknetAccess.Patches
         private static void EnterDisplayFocus()
         {
             DisplayHasFocus = true;
+            _focusEnteredFrame = AccessStateManager.FrameCount;
 
             // Exit network map focus if active
             if (NetworkMapPatches.HasFocus)
@@ -497,6 +509,14 @@ namespace HacknetAccess.Patches
         /// </summary>
         private static void ReReadDisplay()
         {
+            // Web server content (from DaemonPatches)
+            if (DaemonPatches.LastWebContent != null)
+            {
+                Plugin.Announce(Loc.Get("daemon.webPage",
+                    DaemonPatches.LastWebContent), false);
+                return;
+            }
+
             if (_lastDisplayMode == "cat" && _catLines != null && _catLines.Length > 0)
             {
                 string clean = _lastDisplayContent?.Replace("\r\n", " ").Replace("\n", " ") ?? "";
@@ -536,6 +556,7 @@ namespace HacknetAccess.Patches
             {
                 _pendingFocusRestore = false;
                 DisplayHasFocus = true;
+                _focusEnteredFrame = AccessStateManager.FrameCount;
                 if (NetworkMapPatches.HasFocus)
                 {
                     NetworkMapPatches.Reset();
@@ -543,8 +564,11 @@ namespace HacknetAccess.Patches
                 DebugLogger.Log(LogCategory.Handler, "Display", "Focus restored (deferred)");
             }
 
-            // Auto-exit focus if daemon stopped drawing (e.g., disconnected)
-            if (DisplayHasFocus && !IsInteractiveDaemonActive())
+            // Auto-exit focus if daemon stopped drawing (e.g., disconnected).
+            // Grace period: skip check for 5 frames after entering focus so the
+            // daemon has time to draw at least once and set its active flag.
+            if (DisplayHasFocus && !IsInteractiveDaemonActive()
+                && (AccessStateManager.FrameCount - _focusEnteredFrame) > 5)
             {
                 DisplayHasFocus = false;
                 MissionListingPatches.Reset();
