@@ -34,11 +34,19 @@ namespace HacknetAccess.Patches
         private static bool _deathRowActive;
         private static object _deathRowInstance;
 
+        // Generic DatabaseDaemon (CFC Records, etc.)
+        private static int _lastGenericState = -1;
+        private static bool _genericActive;
+        private static object _genericInstance;
+        private static int _genericRecordIndex;
+        private static int _genericRecordCount;
+
         /// <summary>
         /// Whether any database daemon is currently being drawn.
         /// Used by DisplayModulePatches to detect interactive daemon presence.
         /// </summary>
-        public static bool IsActive => _academicActive || _deathRowActive || _medicalActive;
+        public static bool IsActive => _academicActive || _deathRowActive
+            || _medicalActive || _genericActive;
 
         #region Academic Database
 
@@ -116,7 +124,7 @@ namespace HacknetAccess.Patches
                                 if (_academicMatchCount > 0)
                                 {
                                     Plugin.Announce(Loc.Get("db.multiMatch", _academicMatchCount), false);
-                                    AnnounceCurrentMatch();
+                                    AnnounceCurrentMatch(false);
                                 }
                                 break;
                         }
@@ -225,12 +233,12 @@ namespace HacknetAccess.Patches
         /// <summary>
         /// Announce current match in multi-match list.
         /// </summary>
-        private static void AnnounceCurrentMatch()
+        private static void AnnounceCurrentMatch(bool interrupt = true)
         {
             if (_academicMatchIndex < 0 || _academicMatchIndex >= _academicMatchCount) return;
             Plugin.Announce(Loc.Get("db.matchItem",
                 _academicMatchIndex + 1, _academicMatchCount,
-                _academicMatchNames[_academicMatchIndex]));
+                _academicMatchNames[_academicMatchIndex]), interrupt);
         }
 
         #endregion
@@ -290,10 +298,10 @@ namespace HacknetAccess.Patches
                         switch (stateVal)
                         {
                             case 0: // MainMenu
-                                Plugin.Announce(Loc.Get("db.welcome") + " Medical Database.", false);
+                                Plugin.Announce(Loc.Get("db.medicalMain"), false);
                                 break;
                             case 1: // Search
-                                Plugin.Announce(Loc.Get("db.search"), false);
+                                Plugin.Announce(Loc.Get("db.medicalSearchPrompt"), false);
                                 break;
                             case 3: // Entry
                                 AnnounceMedicalEntry(__instance);
@@ -301,8 +309,24 @@ namespace HacknetAccess.Patches
                             case 4: // Error
                                 Plugin.Announce(Loc.Get("db.notFound"), false);
                                 break;
+                            case 5: // AboutScreen
+                                Plugin.Announce(Loc.Get("db.medicalInfo"), false);
+                                break;
+                            case 6: // SendReport
+                                Plugin.Announce(Loc.Get("db.medicalSend"), false);
+                                break;
+                            case 7: // SendReportSearch
+                                Plugin.Announce(Loc.Get("db.medicalSendPrompt"), false);
+                                break;
+                            case 9: // SendReportComplete
+                                Plugin.Announce(Loc.Get("db.medicalSendDone"), false);
+                                break;
                         }
                     }
+
+                    // Claim Escape for internal back-navigation (except MainMenu where it exits)
+                    if (_lastMedicalState != 0 && _lastMedicalState != -1)
+                        DisplayModulePatches.DaemonClaimsEscape = true;
                 }
                 catch (Exception ex)
                 {
@@ -457,6 +481,271 @@ namespace HacknetAccess.Patches
 
         #endregion
 
+        #region Generic DatabaseDaemon (CFC Records, etc.)
+
+        /// <summary>
+        /// Prefix on DatabaseDaemon.draw — mark active.
+        /// </summary>
+        [HarmonyPatch]
+        static class GenericDrawPrefix
+        {
+            static MethodBase TargetMethod()
+            {
+                return AccessTools.Method(
+                    AccessTools.TypeByName("Hacknet.DatabaseDaemon"),
+                    "draw",
+                    new[] { typeof(Microsoft.Xna.Framework.Rectangle),
+                            typeof(Microsoft.Xna.Framework.Graphics.SpriteBatch) });
+            }
+
+            static void Prefix(object __instance)
+            {
+                _genericActive = true;
+                _genericInstance = __instance;
+            }
+        }
+
+        /// <summary>
+        /// Postfix on DatabaseDaemon.draw — announce state changes and record list.
+        /// State enum: Welcome(0), Search(1, unused), Browse(2), Loading(3),
+        /// EntryDisplay(4), Error(5).
+        /// </summary>
+        [HarmonyPatch]
+        static class GenericDrawPostfix
+        {
+            static MethodBase TargetMethod()
+            {
+                return AccessTools.Method(
+                    AccessTools.TypeByName("Hacknet.DatabaseDaemon"),
+                    "draw",
+                    new[] { typeof(Microsoft.Xna.Framework.Rectangle),
+                            typeof(Microsoft.Xna.Framework.Graphics.SpriteBatch) });
+            }
+
+            static void Postfix(object __instance)
+            {
+                try
+                {
+                    var type = __instance.GetType();
+                    int stateVal = (int)AccessTools.Field(type, "State").GetValue(__instance);
+
+                    if (stateVal != _lastGenericState)
+                    {
+                        _lastGenericState = stateVal;
+
+                        switch (stateVal)
+                        {
+                            case 0: // Welcome
+                                AnnounceGenericWelcome(__instance);
+                                break;
+                            case 2: // Browse
+                                BuildGenericRecordList(__instance);
+                                _genericRecordIndex = 0;
+                                AnnounceGenericBrowse();
+                                break;
+                            case 4: // EntryDisplay
+                                AnnounceGenericEntry(__instance);
+                                break;
+                            case 5: // Error
+                                Plugin.Announce(Loc.Get("db.notFound"), false);
+                                break;
+                        }
+                    }
+
+                    // Claim Escape for internal back-navigation in sub-states
+                    if (_lastGenericState == 2 || _lastGenericState == 4
+                        || _lastGenericState == 5)
+                        DisplayModulePatches.DaemonClaimsEscape = true;
+                }
+                catch (Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "GenericDB",
+                        $"DrawPostfix failed: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Announce welcome screen — name + access state + available actions.
+        /// </summary>
+        private static void AnnounceGenericWelcome(object instance)
+        {
+            try
+            {
+                var type = instance.GetType();
+                string name = (string)AccessTools.Field(
+                    AccessTools.TypeByName("Hacknet.Daemon"), "name")
+                    ?.GetValue(instance) ?? "Database";
+
+                var permissionsField = AccessTools.Field(type, "Permissions");
+                int permissions = (int)permissionsField.GetValue(instance);
+                var comp = AccessTools.Field(
+                    AccessTools.TypeByName("Hacknet.Daemon"), "comp")
+                    .GetValue(instance);
+                string adminIP = (string)AccessTools.Field(comp.GetType(), "adminIP")
+                    .GetValue(comp);
+                var os = AccessTools.Field(
+                    AccessTools.TypeByName("Hacknet.Daemon"), "os")
+                    .GetValue(instance);
+                var thisComp = AccessTools.Field(os.GetType(), "thisComputer")
+                    .GetValue(os);
+                string thisIP = (string)AccessTools.Field(thisComp.GetType(), "ip")
+                    .GetValue(thisComp);
+
+                // Permissions: 0 = AdminOnly, 1 = Public
+                bool hasAccess = permissions == 1 || adminIP == thisIP;
+                string key = hasAccess
+                    ? "db.genericWelcome"
+                    : "db.genericWelcomeNoAccess";
+                Plugin.Announce(Loc.Get(key, name), false);
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "GenericDB",
+                    $"AnnounceWelcome failed: {ex.Message}");
+                Plugin.Announce(Loc.Get("db.genericWelcome", "Database"), false);
+            }
+        }
+
+        /// <summary>
+        /// Build the list of record names for navigation.
+        /// </summary>
+        private static void BuildGenericRecordList(object instance)
+        {
+            _genericRecordCount = 0;
+            try
+            {
+                var type = instance.GetType();
+                var folder = AccessTools.Field(type, "DatasetFolder").GetValue(instance);
+                if (folder == null) return;
+                var files = AccessTools.Field(folder.GetType(), "files")
+                    ?.GetValue(folder) as IList;
+                if (files == null) return;
+                _genericRecordCount = files.Count;
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "GenericDB",
+                    $"BuildRecordList failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Get the display name for a record at the given index, formatted via
+        /// the daemon's GetAnnounceNameForFileName method.
+        /// </summary>
+        private static string GetGenericRecordName(int index)
+        {
+            try
+            {
+                if (_genericInstance == null) return null;
+                var type = _genericInstance.GetType();
+                var folder = AccessTools.Field(type, "DatasetFolder").GetValue(_genericInstance);
+                if (folder == null) return null;
+                var files = AccessTools.Field(folder.GetType(), "files")
+                    ?.GetValue(folder) as IList;
+                if (files == null || index < 0 || index >= files.Count) return null;
+
+                var file = files[index];
+                string filename = (string)AccessTools.Field(file.GetType(), "name")
+                    ?.GetValue(file) ?? "";
+
+                // Mirror DatabaseDaemon.GetAnnounceNameForFileName
+                filename = filename.Replace(".rec", "");
+                bool filenameIsPersonName = (bool)AccessTools.Field(type, "FilenameIsPersonName")
+                    .GetValue(_genericInstance);
+                if (filenameIsPersonName)
+                {
+                    string[] parts = filename.Split('_');
+                    if (parts.Length >= 2)
+                        return parts[1] + " " + parts[0];
+                }
+                return filename;
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "GenericDB",
+                    $"GetRecordName failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Announce arrival at the Browse screen with the first record.
+        /// </summary>
+        private static void AnnounceGenericBrowse()
+        {
+            if (_genericRecordCount == 0)
+            {
+                Plugin.Announce(Loc.Get("db.genericBrowseEmpty"), false);
+                return;
+            }
+            Plugin.Announce(Loc.Get("db.genericBrowse", _genericRecordCount), false);
+            AnnounceGenericRecord(false);
+        }
+
+        /// <summary>
+        /// Announce the currently selected record.
+        /// </summary>
+        private static void AnnounceGenericRecord(bool interrupt = true)
+        {
+            if (_genericRecordCount == 0) return;
+            string name = GetGenericRecordName(_genericRecordIndex) ?? "Unknown";
+            Plugin.Announce(Loc.Get("db.genericRecord",
+                _genericRecordIndex + 1, _genericRecordCount, name), interrupt);
+        }
+
+        /// <summary>
+        /// Announce the contents of the currently displayed entry.
+        /// Reads ActiveFile.data and strips XML markers.
+        /// </summary>
+        private static void AnnounceGenericEntry(object instance)
+        {
+            try
+            {
+                var type = instance.GetType();
+                var activeFile = AccessTools.Field(type, "ActiveFile")?.GetValue(instance);
+                if (activeFile == null)
+                {
+                    Plugin.Announce(Loc.Get("db.entry", "Unknown"), false);
+                    return;
+                }
+
+                string filename = (string)AccessTools.Field(activeFile.GetType(), "name")
+                    ?.GetValue(activeFile) ?? "";
+                string data = (string)AccessTools.Field(activeFile.GetType(), "data")
+                    ?.GetValue(activeFile) ?? "";
+
+                // Mirror name formatting
+                string displayName = filename.Replace(".rec", "");
+                bool filenameIsPersonName = (bool)AccessTools.Field(type, "FilenameIsPersonName")
+                    .GetValue(instance);
+                if (filenameIsPersonName)
+                {
+                    string[] parts = displayName.Split('_');
+                    if (parts.Length >= 2)
+                        displayName = parts[1] + " " + parts[0];
+                }
+
+                // Clean XML markers (data uses [ ] instead of < >)
+                string cleaned = data.Replace("[", "").Replace("]", " ");
+                // Collapse whitespace
+                cleaned = System.Text.RegularExpressions.Regex.Replace(
+                    cleaned, @"\s+", " ").Trim();
+                if (cleaned.Length > 800)
+                    cleaned = cleaned.Substring(0, 800) + "...";
+
+                Plugin.Announce(Loc.Get("db.entry", displayName) + ". " + cleaned, false);
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "GenericDB",
+                    $"AnnounceEntry failed: {ex.Message}");
+            }
+        }
+
+        #endregion
+
         /// <summary>
         /// Process keyboard shortcuts for database daemons.
         /// </summary>
@@ -517,8 +806,59 @@ namespace HacknetAccess.Patches
                 }
             }
 
-            // Clear medical active flag each frame
-            _medicalActive = false;
+            // Medical DB input
+            if (_medicalActive)
+            {
+                _medicalActive = false;
+
+                bool rKey = focused && Plugin.IsKeyPressed(Keys.R, currentState);
+                bool iKey = focused && Plugin.IsKeyPressed(Keys.I, currentState);
+
+                switch (_lastMedicalState)
+                {
+                    case 0: // MainMenu
+                        if (enter)
+                            _pendingButton = 444402005; // Search
+                        else if (rKey)
+                            _pendingButton = 444402007; // Random Entry
+                        else if (iKey)
+                            _pendingButton = 444402000; // Info / About
+                        else if (escape)
+                            _pendingButton = 444402800; // Exit Database View
+                        break;
+
+                    case 3: // Entry
+                        if (enter)
+                            _pendingButton = 444402035; // e-mail this record
+                        else if (escape)
+                            _pendingButton = 444402033; // Back to menu
+                        break;
+
+                    case 4: // Error
+                        if (enter || escape)
+                            _pendingButton = 444402002; // Back to menu
+                        break;
+
+                    case 5: // AboutScreen
+                        if (enter || escape)
+                            _pendingButton = 444402002; // Back to menu
+                        break;
+
+                    case 6: // SendReport
+                        if (enter)
+                            _pendingButton = 444402023; // Specify Address
+                        else if (escape)
+                            _pendingButton = 444402002; // Back to menu
+                        break;
+
+                    case 9: // SendReportComplete
+                        if (enter)
+                            _pendingButton = 444402001; // Send to different address
+                        else if (escape)
+                            _pendingButton = 444402002; // Back to menu
+                        break;
+                }
+            }
 
             // Death Row DB input
             if (_deathRowActive)
@@ -532,6 +872,56 @@ namespace HacknetAccess.Patches
                 else if (_lastDeathRowIndex < 0 && Plugin.IsKeyPressed(Keys.Escape, currentState))
                 {
                     _pendingButton = 166261601; // Exit
+                }
+            }
+
+            // Generic DB input (CFC Records, etc.)
+            if (_genericActive)
+            {
+                _genericActive = false;
+
+                bool lKey = focused && Plugin.IsKeyPressed(Keys.L, currentState);
+
+                switch (_lastGenericState)
+                {
+                    case 0: // Welcome
+                        if (enter)
+                            _pendingButton = 73616101; // Browse Records
+                        else if (lKey)
+                            _pendingButton = 73616102; // Login
+                        else if (escape)
+                            _pendingButton = 73616129; // Exit
+                        break;
+
+                    case 2: // Browse
+                        if (up && _genericRecordCount > 0)
+                        {
+                            if (_genericRecordIndex > 0) _genericRecordIndex--;
+                            AnnounceGenericRecord();
+                        }
+                        else if (down && _genericRecordCount > 0)
+                        {
+                            if (_genericRecordIndex < _genericRecordCount - 1)
+                                _genericRecordIndex++;
+                            AnnounceGenericRecord();
+                        }
+                        else if (enter && _genericRecordCount > 0)
+                        {
+                            _pendingButton = 71118100 + _genericRecordIndex;
+                        }
+                        else if (escape)
+                            _pendingButton = 71118000; // Back
+                        break;
+
+                    case 4: // EntryDisplay
+                        if (escape)
+                            _pendingButton = 7301991; // Back
+                        break;
+
+                    case 5: // Error
+                        if (enter || escape)
+                            _pendingButton = 73616101; // Back
+                        break;
                 }
             }
         }
@@ -554,6 +944,12 @@ namespace HacknetAccess.Patches
             _lastDeathRowIndex = -2;
             _deathRowActive = false;
             _deathRowInstance = null;
+
+            _lastGenericState = -1;
+            _genericActive = false;
+            _genericInstance = null;
+            _genericRecordIndex = 0;
+            _genericRecordCount = 0;
         }
     }
 }
